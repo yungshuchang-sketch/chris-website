@@ -71,7 +71,6 @@
         }
         .cloud-1 { animation-duration: 40s; top: 10%; width: 120px; }
         .cloud-2 { animation-duration: 60s; top: 30%; width: 80px; animation-delay: -20s; }
-        .cloud-3 { animation-duration: 50s; top: 20%; width: 150px; animation-delay: -10s; }
 
         /* Markdown 內容美化樣式 */
         .markdown-content p { margin-bottom: 0.5em; }
@@ -99,55 +98,61 @@
 <body>
     <div id="root"></div>
 
+    <!-- Firebase 模組與初始化邏輯 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection, query, addDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // 您的 Firebase Config 憑證
+        const firebaseConfig = {
+          apiKey: "AIzaSyDb20UwVm-JRHatklSKHrM3E_7VKAUQl4E",
+          authDomain: "wonder-farm-kanban.firebaseapp.com",
+          projectId: "wonder-farm-kanban",
+          storageBucket: "wonder-farm-kanban.firebasestorage.app",
+          messagingSenderId: "390328085886",
+          appId: "1:390328085886:web:0ad2ad2645f14b16c0972f",
+          measurementId: "G-99CKPDM349"
+        };
 
         window.firebaseApp = null;
         window.firebaseDb = null;
         window.firebaseAuth = null;
         window.isFirebaseActive = false;
         window.currentUserId = null;
+        window.appId = firebaseConfig.projectId; // 綁定雲端資料夾識別碼
 
         window.firebaseFirestore = {
             doc, setDoc, deleteDoc, onSnapshot, collection, query, addDoc, updateDoc
         };
 
         try {
-            const appId = typeof __app_id !== 'undefined' ? __app_id : null;
-            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-            const initialToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+            // 初始化 Firebase
+            window.firebaseApp = initializeApp(firebaseConfig);
+            window.firebaseDb = getFirestore(window.firebaseApp);
+            window.firebaseAuth = getAuth(window.firebaseApp);
 
-            if (appId && firebaseConfig) {
-                window.firebaseApp = initializeApp(firebaseConfig);
-                window.firebaseDb = getFirestore(window.firebaseApp);
-                window.firebaseAuth = getAuth(window.firebaseApp);
-                window.appId = appId;
-
-                const authPromise = initialToken 
-                    ? signInWithCustomToken(window.firebaseAuth, initialToken)
-                    : signInAnonymously(window.firebaseAuth);
-
-                authPromise.then((userCredential) => {
-                    window.currentUserId = userCredential.user.uid;
-                    window.isFirebaseActive = true;
-                    window.dispatchEvent(new Event('firebase-ready'));
-                    console.log("Firebase initialized successfully.");
-                }).catch(err => {
-                    console.warn("Firebase auth failed, fallback to LocalStorage", err);
-                });
-            } else {
-                console.log("No Firebase config found, defaulting to LocalStorage mode.");
-            }
+            // 執行匿名登入，讓網頁具備雲端存取身分
+            signInAnonymously(window.firebaseAuth).then((userCredential) => {
+                // 為避免匿名身分因清除瀏覽器快取改變而找不到資料，這裡推薦在協作時共用一個基礎路徑
+                // 如果需要「全團隊看同一個看板」，我們在 React 的資料讀取路徑上做統一
+                window.currentUserId = "shared_farm_board"; 
+                window.isFirebaseActive = true;
+                window.dispatchEvent(new Event('firebase-ready'));
+                console.log("Firebase 雲端同步初始化成功！");
+            }).catch(err => {
+                console.warn("Firebase 驗證失敗，將自動降級為單機儲存模式：", err);
+            });
         } catch (error) {
-            console.warn("Firebase setup error, using LocalStorage.", error);
+            console.warn("Firebase 連線錯誤，自動切換為 LocalStorage 單機儲存模式。", error);
         }
     </script>
 
+    <!-- React 看板核心邏輯 -->
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
+        // 初始預設排程種子（若資料庫全空時會自動播種）
         const initialTasks = [
             { id: '1', title: 'Day 1: 預告活動', content: '發布剪影圖，讓大家猜猜即將到來的神秘活動。', status: 'todo', theme: '貼文', startDate: '2026-07-01', endDate: '2026-07-01', assignee: '小幫手A' },
             { id: '2', title: 'Day 2: 揭曉主題', content: '正式公布「夏日豐收祭」活動，並預告有抽獎！', status: 'todo', theme: '貼文', startDate: '2026-07-02', endDate: '2026-07-02', assignee: '小幫手B' },
@@ -203,7 +208,8 @@
                 const initData = async () => {
                     if (window.isFirebaseActive && window.firebaseDb && window.currentUserId) {
                         setStorageMode('cloud');
-                        const collectionRef = window.firebaseFirestore.collection(window.firebaseDb, 'artifacts', window.appId, 'users', window.currentUserId, 'tasks');
+                        // 建立雲端資料集路徑
+                        const collectionRef = window.firebaseFirestore.collection(window.firebaseDb, 'wonder_farm_boards', window.currentUserId, 'tasks');
                         
                         dbRef.current = window.firebaseFirestore.onSnapshot(collectionRef, (snapshot) => {
                             const fetchedTasks = snapshot.docs.map(doc => ({
@@ -212,6 +218,7 @@
                             }));
                             
                             if (fetchedTasks.length === 0) {
+                                // 如果雲端是空的，播下初始預設點子
                                 Promise.all(initialTasks.map(task => {
                                     const { id, ...taskData } = task;
                                     return window.firebaseFirestore.addDoc(collectionRef, taskData);
@@ -220,7 +227,7 @@
                                 setTasks(fetchedTasks);
                             }
                         }, (error) => {
-                            console.error("Firebase listen error:", error);
+                            console.error("Firebase 監聽錯誤:", error);
                             fallbackToLocal();
                         });
                     } else {
@@ -242,7 +249,7 @@
                 if (window.isFirebaseActive) {
                     initData();
                 } else {
-                    const timer = setTimeout(fallbackToLocal, 1500);
+                    const timer = setTimeout(fallbackToLocal, 2000); // 2秒沒連上就自動切本地
                     const handleReady = () => {
                         clearTimeout(timer);
                         initData();
@@ -275,9 +282,9 @@
                 };
 
                 if (storageMode === 'cloud') {
-                    const collectionRef = window.firebaseFirestore.collection(window.firebaseDb, 'artifacts', window.appId, 'users', window.currentUserId, 'tasks');
+                    const collectionRef = window.firebaseFirestore.collection(window.firebaseDb, 'wonder_farm_boards', window.currentUserId, 'tasks');
                     if (editingTask) {
-                        const docRef = window.firebaseFirestore.doc(window.firebaseDb, 'artifacts', window.appId, 'users', window.currentUserId, 'tasks', editingTask.id);
+                        const docRef = window.firebaseFirestore.doc(window.firebaseDb, 'wonder_farm_boards', window.currentUserId, 'tasks', editingTask.id);
                         await window.firebaseFirestore.updateDoc(docRef, newTask);
                     } else {
                         await window.firebaseFirestore.addDoc(collectionRef, newTask);
@@ -294,7 +301,7 @@
 
             const handleDelete = async (id) => {
                 if (storageMode === 'cloud') {
-                    const docRef = window.firebaseFirestore.doc(window.firebaseDb, 'artifacts', window.appId, 'users', window.currentUserId, 'tasks', id);
+                    const docRef = window.firebaseFirestore.doc(window.firebaseDb, 'wonder_farm_boards', window.currentUserId, 'tasks', id);
                     await window.firebaseFirestore.deleteDoc(docRef);
                 } else {
                     setTasks(tasks.filter(t => t.id !== id));
@@ -323,7 +330,7 @@
                 if (!draggedItem || draggedItem.status === status) return;
 
                 if (storageMode === 'cloud') {
-                     const docRef = window.firebaseFirestore.doc(window.firebaseDb, 'artifacts', window.appId, 'users', window.currentUserId, 'tasks', draggedItem.id);
+                     const docRef = window.firebaseFirestore.doc(window.firebaseDb, 'wonder_farm_boards', window.currentUserId, 'tasks', draggedItem.id);
                      await window.firebaseFirestore.updateDoc(docRef, { status: status });
                 } else {
                     setTasks(tasks.map(task => 
@@ -400,7 +407,7 @@
 
                     if(newTasks.length > 0){
                         if(storageMode === 'cloud'){
-                            const collectionRef = window.firebaseFirestore.collection(window.firebaseDb, 'artifacts', window.appId, 'users', window.currentUserId, 'tasks');
+                            const collectionRef = window.firebaseFirestore.collection(window.firebaseDb, 'wonder_farm_boards', window.currentUserId, 'tasks');
                             for(const task of newTasks){
                                 await window.firebaseFirestore.addDoc(collectionRef, task);
                             }
@@ -422,7 +429,7 @@
                         onDragStart={(e) => handleDragStart(e, task)}
                         onDragEnd={handleDragEnd}
                         onClick={() => setViewingTask(task)}
-                        className="bg-white p-4 rounded-2xl shadow-sm border-2 border-transparent hover:border-green-300 hover:shadow-md transition-all cubic-bezier(0.4, 0, 0.2, 1) cursor-pointer group relative mb-3"
+                        className="bg-white p-4 rounded-2xl shadow-sm border-2 border-transparent hover:border-green-300 hover:shadow-md transition-all cursor-pointer group relative mb-3"
                     >
                         <div className="flex justify-between items-start mb-2">
                             <span className="text-emerald-800 font-extrabold text-lg">{task.title}</span>
@@ -486,8 +493,8 @@
                                          神奇農場 IG 排程管理
                                     </h1>
                                     <div className="flex items-center gap-2 mt-1 text-sm font-bold">
-                                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs ${storageMode === 'cloud' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                                            ● {storageMode === 'cloud' ? '雲端同步中' : storageMode === 'local' ? '單機儲存模式' : '連線中...'}
+                                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs ${storageMode === 'cloud' ? 'bg-emerald-100 text-emerald-700' : storageMode === 'local' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+                                            ● {storageMode === 'cloud' ? '雲端同步中' : storageMode === 'local' ? '單機儲存模式' : '同步連線中...'}
                                         </span>
                                     </div>
                                 </div>
@@ -576,7 +583,7 @@
                     {/* Modal: 新增 / 編輯視窗 */}
                     {isModalOpen && (
                         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                            <div className="bg-white rounded-3xl shadow-xl border-4 border-emerald-50 max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 animate-scale-in">
+                            <div className="bg-white rounded-3xl shadow-xl border-4 border-emerald-50 max-w-lg w-full max-h-[90vh] overflow-y-auto p-6">
                                 <h3 className="text-xl font-black text-emerald-900 mb-4 flex items-center gap-1.5">
                                     {editingTask ? '📝 編輯發文點子' : '✨ 播下新點子種子'}
                                 </h3>
@@ -665,7 +672,7 @@
                     {/* Modal: 瀏覽詳細資料視窗 */}
                     {viewingTask && (
                         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setViewingTask(null)}>
-                            <div className="bg-white rounded-3xl shadow-xl border-4 border-emerald-50 max-w-xl w-full p-6 animate-scale-in" onClick={e => e.stopPropagation()}>
+                            <div className="bg-white rounded-3xl shadow-xl border-4 border-emerald-50 max-w-xl w-full p-6" onClick={e => e.stopPropagation()}>
                                 <div className="flex justify-between items-start mb-3">
                                     <div>
                                         <span className="text-xs font-black text-emerald-600 tracking-wider block mb-0.5">WONDER FARM 排程詳情</span>
